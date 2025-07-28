@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.suibian.mapper.BlogMapper">
+
+    <resultMap id="BaseResultMap" type="com.suibian.model.entity.Blog">
+            <id property="id" column="id" />
+            <result property="userId" column="user_id" />
+            <result property="title" column="title" />
+            <result property="coverImg" column="cover_img" />
+            <result property="content" column="content" />
+            <result property="thumbCount" column="thumb_count" />
+            <result property="createTime" column="create_time" />
+            <result property="updateTime" column="update_time" />
+            <result property="deleted" column="deleted" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,user_id,title,cover_img,content,thumb_count,
+        create_time,update_time,deleted
+    </sql>
+</mapper>
