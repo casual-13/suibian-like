@@ -2,6 +2,7 @@ package com.suibian.service.impl;
 
 import cn.dev33.satoken.stp.StpUtil;
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -15,14 +16,18 @@ import com.suibian.model.vo.BlogVO;
 import com.suibian.service.BlogService;
 import com.suibian.service.ThumbService;
 import com.suibian.service.UserService;
+import com.suibian.util.RedisKeyUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.weaver.ast.Var;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -34,13 +39,18 @@ import java.util.stream.Collectors;
  */
 @Service
 //@RequiredArgsConstructor
-@Setter
 @Slf4j
 public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements BlogService {
 
+    @Resource
     UserService userService;
 
+    @Resource
+    @Lazy
     ThumbService thumbService;
+
+    @Resource
+    RedisTemplate<String, Object> redisTemplate;
 
     @Override
     public BlogVO getBlogVOById(Long id) {
@@ -53,10 +63,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
         BlogVO blogVO = BeanUtil.copyProperties(blog, BlogVO.class);
         if (user != null) {
             // 查询用户点赞记录
-            boolean exists = thumbService.lambdaQuery()
-                    .eq(Thumb::getBlogId, blog.getId())
-                    .eq(Thumb::getUserId, user.getId())
-                    .exists();
+            boolean exists = thumbService.isThumb(user.getId(), blog.getId());
             blogVO.setHasThumb(exists);
         }
         return blogVO;
@@ -80,13 +87,36 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
         if (blogList == null || blogList.isEmpty()) {
             return PageResult.empty();
         }
-        // 如果以后要返回用户数据给前端 就改动BlogVO
-        // 获取用户数据
-        User user = userService.getLoginUser();
+        // 获取博客Ids
+        List<Object> blogIdsList = blogList.stream().map(blog -> blog.getId().toString()).collect(Collectors.toList());
+        // 获取用户点赞记录
+        HashMap<Long, Boolean> thumbMap = new HashMap<>(blogIdsList.size());
+        // 获取用户数据 Key 为博客ID Value 为是否点赞
+        User loginUser = userService.getLoginUser();
+        if (ObjectUtil.isNotEmpty(loginUser)) {
+            Long userId = loginUser.getId();
+            // 批量获取用户点赞记录, Key 为博客ID Value 为是否点赞
+            getThumbMap(userId, blogIdsList, thumbMap);
+        }
         List<BlogVO> blogVOList = blogList.stream()
-                .map(blog -> this.getBlogVO(blog, user))
+                .map(blog -> {
+                    BlogVO blogVO = BeanUtil.copyProperties(blog, BlogVO.class);
+                    blogVO.setHasThumb(thumbMap.getOrDefault(blog.getId(), false));
+                    return blogVO;
+                })
                 .collect(Collectors.toList());
         return new PageResult<>(blogVOList, blogPage.getTotal());
+    }
+
+    private void getThumbMap(Long userId, List<Object> blogIdsList, HashMap<Long, Boolean> thumbMap) {
+        List<Boolean> userThumbs = redisTemplate.opsForHash()
+                .multiGet(RedisKeyUtil.getUserThumbKey(userId), blogIdsList)
+                .stream()
+                .map(Objects::nonNull)
+                .collect(Collectors.toList());
+        for (int i = 0; i < blogIdsList.size(); i ++ ) {
+            thumbMap.put(Long.valueOf(blogIdsList.get(i).toString()), userThumbs.get(i));
+        }
     }
 }
 

@@ -5,3 +5,11 @@ spring:
     url: jdbc:mysql://localhost:3306/suibian_like?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
     password: 2003dhy0915
+  data:
+    # Redis 配置
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      connect-timeout: 5000
+#      password: xxx # 没有密码可注释
