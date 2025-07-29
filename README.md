@@ -155,9 +155,175 @@ Spring创建Bean分为3个步骤：
 
 **实战**
 
-**由以上理论基础，得到的解决办法就是，将字母序列靠前的Bean改为set注入即可，直接添加@Setter注解，注释掉@RequiredArgsConstructor注解**
+**由以上理论基础，得到的解决办法就是，将字母序列靠前的Bean延迟加载，直接添加@Lazy注解，注释掉@RequiredArgsConstructor注解，将构造器注入改为字段注入，当然Setter注入也可以**
 
 ![](./img/img14.jpg)
 
 ![](./img/img15.jpg)
 
+
+
+## 第二天：Redis优化 + 循环依赖Bug修复
+
+**今天使用Redis存储点赞状态，以减轻数据库的压力，这里自然采用Hash数据结构**
+
+**方案一**
+
+Key为用户ID，HashKey为博客ID，HashValue为点赞记录ID
+
+![](./img/img16.jpg)
+
+​	**优点：直接根据用户ID就可以直接搜索到该用户的所有点赞博客** 
+
+​	**缺点：如果要查询博客的点赞用户则要遍历全部的记录**
+
+**方案二**
+
+Key为博客ID，HashKey为用户ID，HashValue为点赞记录ID
+
+![](./img/img17.jpg)
+
+​	**优点：直接根据博客ID就可以直接搜索到该博客的所有点赞用户** 
+
+​	**缺点：如果要查询用户的点赞博客则要遍历全部的记录**
+
+**由于业务涉及到查看用户所有博客，这里选择方案一，如果要扩展查看博客所有点赞用户可以把方案二添上**
+
+**RedisUtil类获得RedisKey**
+
+![](./img/img18.jpg)
+
+**在多处地方涉及判断是否点赞，这里把数据库查询，改为Redis查询**
+
+![](./img/img19.jpg)
+
+**对应点赞，取消点赞，根据ID查询博客，批量查询博客都要更改**
+
+```java
+	/**
+     * 点赞
+     *
+     * @param thumbLikeOrNotDTO 点赞或取消点赞参数列表
+     * @return 是否成功
+     */
+    @Override
+    public Boolean doThumb(ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
+        		......
+                // 缓存点赞记录
+                if (success) {
+                    redisTemplate.opsForHash().put(RedisKeyUtil.getUserThumbKey(userId), blogId.toString(), 					thumb.getId());
+                }
+                return success;
+            });
+        }
+    }
+```
+
+```
+	/**
+     * 取消点赞
+     *
+     * @param thumbLikeOrNotDTO 点赞或取消点赞参数列表
+     * @return 是否成功
+     */
+    @Override
+    public Boolean undoThumb(ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
+        // 删除点赞记录
+        synchronized (loginUser.getId().toString().intern()) {
+            return transactionTemplate.execute(status -> {
+                Long blogId = thumbLikeOrNotDTO.getBlogId();
+                Long userId = loginUser.getId();
+                // 判断是否已经点赞
+                Long thumbId = Long.valueOf(Objects.requireNonNull(redisTemplate
+                                .opsForHash()
+                                .get(RedisKeyUtil.getUserThumbKey(userId), blogId.toString()))
+                        .toString());
+                // 修改博客点赞数
+                boolean update = blogService.lambdaUpdate()
+                        .eq(Blog::getId, blogId)
+                        .setSql("thumb_count = thumb_count - 1")
+                        .update();
+                boolean success = update && this.removeById(thumbId);
+                // 删除缓存记录
+                if (success) {
+                    redisTemplate.opsForHash().delete(RedisKeyUtil.getUserThumbKey(userId), 									blogId.toString());
+                }
+                return success;
+            });
+        }
+    }
+```
+
+**分页获取博客列表这里暂时还是数据库查询，后期再优化，但是查询博客点赞记录这里做了一个小优化，并没有再调用之前的getBlogVO方法，该方法是通过redisTemplate.opsForHash().hasKey(RedisKeyUtil.getUserThumbKey(userId), blogId.toString());查看当前登录用户与博客是否点赞的关系，但是一旦博客多起来，那么博客有多少我就要发送多少次请求到redis里，与redis就要建立多少次连接，这里直接采用redisTemplate.opsForHash().multiGet(RedisKeyUtil.getUserThumbKey(userId), blogIdsList)这样只与redis建立一次连接**
+
+**业务逻辑大概是：先数据库查博客数据`blogList`，再获得博客的所有ID`blogList`，如果用户已经登录，就批量查询Redis该用户与对应博客是否点赞，封装为Map<Long, Boolean>`thumbMap`，Key表示博客ID，Value表示是否点赞，最用通过stream流封装VO返回**
+
+```
+	/**
+     * 分页获取博客列表
+     * @param blogPageReqDTO 博客分页请求参数
+     * @return 博客列表
+     */
+    @Override
+    public PageResult<BlogVO> getBlogPage(BlogPageReqDTO blogPageReqDTO) {
+        // mp 的分页查询
+        Page<Blog> page = new Page<>();
+        page.setCurrent(blogPageReqDTO.getPageNo());
+        page.setSize(blogPageReqDTO.getPageSize());
+        Page<Blog> blogPage = this.page(page, new LambdaQueryWrapper<Blog>()
+                .like(Objects.nonNull(blogPageReqDTO.getBlogName()), Blog::getTitle, 										blogPageReqDTO.getBlogName()));
+        // 获取查询后的分页结果
+        List<Blog> blogList = blogPage.getRecords();
+        if (blogList == null || blogList.isEmpty()) {
+            return PageResult.empty();
+        }
+        // 获取博客Ids
+        List<Object> blogIdsList = blogList.stream().map(blog -> 														blog.getId().toString()).collect(Collectors.toList());
+        // 获取用户点赞记录
+        HashMap<Long, Boolean> thumbMap = new HashMap<>(blogIdsList.size());
+        // 获取用户数据 Key 为博客ID Value 为是否点赞
+        User loginUser = userService.getLoginUser();
+        if (ObjectUtil.isNotEmpty(loginUser)) {
+            Long userId = loginUser.getId();
+            // 批量获取用户点赞记录, Key 为博客ID Value 为是否点赞
+            getThumbMap(userId, blogIdsList, thumbMap);
+        }
+        List<BlogVO> blogVOList = blogList.stream()
+                .map(blog -> {
+                    BlogVO blogVO = BeanUtil.copyProperties(blog, BlogVO.class);
+                    blogVO.setHasThumb(thumbMap.getOrDefault(blog.getId(), false));
+                    return blogVO;
+                })
+                .collect(Collectors.toList());
+        return new PageResult<>(blogVOList, blogPage.getTotal());
+    }
+
+    private void getThumbMap(Long userId, List<Object> blogIdsList, HashMap<Long, Boolean> thumbMap) {
+        List<Boolean> userThumbs = redisTemplate.opsForHash()
+                .multiGet(RedisKeyUtil.getUserThumbKey(userId), blogIdsList)
+                .stream()
+                .map(Objects::nonNull)
+                .collect(Collectors.toList());
+        for (int i = 0; i < blogIdsList.size(); i ++ ) {
+            thumbMap.put(Long.valueOf(blogIdsList.get(i).toString()), userThumbs.get(i));
+        }
+    }
+```
+
+**最好添加satoken集成Redis的依赖，只要添加依赖，satoken会自己维护用户登录信息，不需要我们手动维护**
+
+![](./img/img20.jpg)
+
+**注意**
+
+```
+				// 判断是否已经点赞
+                Long thumbId = Long.valueOf(Objects.requireNonNull(redisTemplate
+                                .opsForHash()
+                                .get(RedisKeyUtil.getUserThumbKey(userId), blogId.toString()))
+                        .toString());
+```
+
+**这里redisTemplate返回的thumbId默认是Integer类型，需要注意的是这里不能用(Long)类型强转，因为Integer与Long两个类是并集的彼此不是谁的子类，这种强转方式只能用在基本数据类型，所以要采用上述方式，先toString，在Long.valueOf**
+
+**当然也可以，在redisTemplate返回Object类型后强转Integer类型在用Integer，因为redis默认是用Integer类型存的，再采用Integer的longValue()方法**

@@ -10,18 +10,13 @@ import com.suibian.common.PageResult;
 import com.suibian.mapper.BlogMapper;
 import com.suibian.model.dto.blog.BlogPageReqDTO;
 import com.suibian.model.entity.Blog;
-import com.suibian.model.entity.Thumb;
 import com.suibian.model.entity.User;
 import com.suibian.model.vo.BlogVO;
 import com.suibian.service.BlogService;
 import com.suibian.service.ThumbService;
 import com.suibian.service.UserService;
 import com.suibian.util.RedisKeyUtil;
-import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.aspectj.weaver.ast.Var;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
@@ -71,6 +66,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
 
     /**
      * 分页获取博客列表
+     *
      * @param blogPageReqDTO 博客分页请求参数
      * @return 博客列表
      */
@@ -114,7 +110,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements Bl
                 .stream()
                 .map(Objects::nonNull)
                 .collect(Collectors.toList());
-        for (int i = 0; i < blogIdsList.size(); i ++ ) {
+        for (int i = 0; i < blogIdsList.size(); i++) {
             thumbMap.put(Long.valueOf(blogIdsList.get(i).toString()), userThumbs.get(i));
         }
     }

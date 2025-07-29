@@ -37,7 +37,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements
     private final TransactionTemplate transactionTemplate;
 
     /**
-     * 点赞或取消点赞
+     * 点赞
      *
      * @param thumbLikeOrNotDTO 点赞或取消点赞参数列表
      * @return 是否成功
