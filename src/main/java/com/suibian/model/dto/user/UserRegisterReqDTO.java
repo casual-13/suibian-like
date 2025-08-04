@@ -1,22 +1,22 @@
 package com.suibian.model.dto.user;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 
 /**
  * 用户注册提交列表
  */
 @Data
-@ApiModel("用户注册请求参数")
+@Tag(name = "用户注册请求参数")
 public class UserRegisterReqDTO {
 
-    @ApiModelProperty("用户账号")
+    @Schema(name = "用户账号")
     private String userAccount;
 
-    @ApiModelProperty("用户密码")
+    @Schema(name = "用户密码")
     private String userPassword;
 
-    @ApiModelProperty("校验密码")
+    @Schema(name = "校验密码")
     private String checkPassword;
 }

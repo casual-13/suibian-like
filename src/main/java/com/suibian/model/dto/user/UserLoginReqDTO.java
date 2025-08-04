@@ -1,17 +1,17 @@
 package com.suibian.model.dto.user;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 
 @Data
-@ApiModel("用户登录")
+@Tag(name = "用户登录")
 public class UserLoginReqDTO {
 
-    @ApiModelProperty(value = "用户账号", required = true)
+    @Schema(name = "用户账号")
     private String userAccount;
 
-    @ApiModelProperty(value = "用户密码", required = true)
+    @Schema(name = "用户密码")
     private String userPassword;
 
 }

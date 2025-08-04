@@ -1,7 +1,7 @@
 package com.suibian.common;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -9,14 +9,14 @@ import java.io.Serializable;
 import java.util.List;
 
 @Data
-@ApiModel(value = "分页结果类")
+@Tag(name = "分页结果类")
 @NoArgsConstructor
-public class PageResult <T> implements Serializable {
+public class PageResult<T> implements Serializable {
 
-    @ApiModelProperty("数据列表")
+    @Schema(name = "数据列表")
     private List<T> list;
 
-    @ApiModelProperty("数据总数")
+    @Schema(name = "数据总数")
     private Long total;
 
     public PageResult(List<T> list, Long total) {

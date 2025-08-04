@@ -5,7 +5,9 @@ import com.suibian.common.PageResult;
 import com.suibian.model.dto.blog.BlogPageReqDTO;
 import com.suibian.model.entity.Blog;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Param;
 
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -15,6 +17,12 @@ import java.util.Objects;
 * @Entity com.suibian.entity.Blog
 */
 public interface BlogMapper extends BaseMapper<Blog> {
+
+    /**
+     * 批量更新点赞数
+     * @param countMap 键：blogId，值：点赞数
+     */
+    void batchUpdateThumbCount(@Param("countMap") Map<Long, Long> countMap);
 
 }
 

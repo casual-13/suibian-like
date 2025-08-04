@@ -109,12 +109,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         if (userPassword.length() < 8) {
             throw new BusinessException(ErrorCode.PASSWORD_LENGTH_NOT_ENOUGH);
         }
-        String encryptPassord = DigestUtils.md5DigestAsHex((SALT + userPassword).getBytes());
+        String encryptPassword = DigestUtils.md5DigestAsHex((SALT + userPassword).getBytes());
         User user = this.baseMapper.selectOne(new LambdaQueryWrapper<User>().eq(User::getUserAccount, userAccount));
         if (user == null) {
             throw new BusinessException(ErrorCode.USER_NOT_EXIST);
         }
-        if (!user.getUserPassword().equals(encryptPassord)) {
+        if (!user.getUserPassword().equals(encryptPassword)) {
             throw new BusinessException(ErrorCode.PASSWORD_ERROR);
         }
         if (UserStatusEnum.isDisable(user.getUserStatus())) {

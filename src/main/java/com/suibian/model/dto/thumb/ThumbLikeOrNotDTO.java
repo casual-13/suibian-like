@@ -1,14 +1,14 @@
 package com.suibian.model.dto.thumb;
 
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 
-@ApiModel("点赞参数")
+@Tag(name = "点赞参数")
 @Data
 public class ThumbLikeOrNotDTO {
 
-    @ApiModelProperty("博客id")
+    @Schema(name = "blogId", description = "博客ID")
     private Long blogId;
 }

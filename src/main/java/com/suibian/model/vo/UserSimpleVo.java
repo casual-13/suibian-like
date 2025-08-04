@@ -1,21 +1,21 @@
 package com.suibian.model.vo;
 
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 @Data
 public class UserSimpleVo {
 
-    @ApiModelProperty("id")
+    @Schema(name = "id")
     private Long id;
 
-    @ApiModelProperty("用户昵称")
+    @Schema(name = "用户昵称")
     private String userName;
 
-    @ApiModelProperty("用户头像")
+    @Schema(name = "用户头像")
     private String userAvatar;
 
-    @ApiModelProperty("用户简介")
+    @Schema(name = "用户简介")
     private String userProfile;
 
 }
