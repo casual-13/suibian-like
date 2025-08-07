@@ -901,3 +901,711 @@ public class SyncThumb2DBCompensatoryJob {
     }
 ```
 
+
+
+## 第四天：使用 HeavyKeeper 算法检测热点博客，并且使用本地缓存 Caffeine 存储热点 key, 减轻 Redis 的压力。
+
+**HeavyKeeper算法是一种非常高效且精确的重度流检测算法，核心目标是找出数据流中出现频率最高的那些元素（Top-K），同时使用有限的内存资源，特别擅长处理长尾分布的数据（即少数元素出现非常频繁，大量元素出现次数很少）**
+
+**HeavyKeeper结合了Count-Min Sketch的思想，并引入了创新的概率指数衰减机制来解决Count-Min Sketch在重度流检测中容易高估低频项的问题**
+
+**该算法的核心数据结构：桶数组（二维）**
+
+**该数组是深度为d，宽度为w的二维数组，桶里面记录了哈希指纹和计数**
+
+**首先我们获得热点key，根据哈希函数，将热点key转化为32位的哈希码，然后这个32位的哈希码就是该热点key对应的一个哈希指纹，我们访问一次，这个桶里就会记录该热点key的一个访问次数，然后根据我们的访问次数通过`PriorityQueue<Node> minHeap`去统计TopK热点Key，以下是图示：**
+
+![](./img/img28.jpg)
+
+**这里是通过对key进行哈希函数计算得到哈希值，再对桶的宽度区域得到该key的一个存储位置，既然如此，就难以避免的会出现哈希冲突，即不同的key经过哈希函数计算后得到同一索引位置，如果得到的哈希指纹不一样还能进一步判断，但如果得到的哈希指纹是一样的，便和我们的逻辑相悖了**
+
+![](./img/img29.jpg)
+
+**因为我们用的是同一个哈希函数，对于不同key计算出来得到的索引位置造成的哈希冲突的概率其实还算高的，于是该算法基于Count-Min Sketch算法采用二维数组，每一层数组都采用不同的哈希函数，代码中用`hashSeeds`来存储每一层的哈希种子，类似于加密中的盐吧，在原本哈希函数算出来哈希值的基础上再与每一层的哈希种子进行异或`^`运算，得到一个新的哈希值**
+
+![](./img/img30.jpg)
+
+**对于同一个Key，在每一层的桶中，对应的位置可以是一样的可以是不一样的，这要看经过哈希函数计算出来的索引位置，通过这种方式可以大概率的避免哈希冲突的发生，但哈希冲突还是存在可能的，所以我们用一个`maxCount`变量统计该Key在每一层的访问次数，取最大值作为该Key的访问次数，之所以是最大是因为发送哈希冲突的位置会根据概率指数衰减机制进行次数衰减，后面会解释**
+
+**该算法的核心操作**
+
+**add元素e**
+
+**1. 计算该元素的指纹`long itemFingerprint = hash(keyBytes);`**
+
+**2. for循环计算每一层的候选桶的索引位置**
+
+**3. 检测候选桶：**
+
+​	**情况A：桶是空的`bucket.count == 0`，直接占用该桶，`bucket.fingerprint = itemFingerprint;`**
+
+​		**`bucket.count = increment;`**
+
+​	**情况B：桶的指纹匹配`bucket.fingerprint == itemFingerprint`，计数直接相加`bucket.count += increment;`**
+
+​	**情况C：桶的指纹不匹配，进行概率衰减（创新点），计数值越大，会衰减的概率越小**
+
+```java
+// 初始化衰减概率查找表，预计算decay^i的值
+this.lookupTable = new double[LOOKUP_TABLE_SIZE];
+for (int i = 0; i < LOOKUP_TABLE_SIZE; i++) {
+    lookupTable[i] = Math.pow(decay, i);
+}
+
+// 根据当前计数值来进行衰减
+for (int j = 0; j < increment; j++) {
+    // 根据当前桶的计数决定衰减概率
+    double decay = bucket.count < LOOKUP_TABLE_SIZE ?
+            lookupTable[bucket.count] :
+            lookupTable[LOOKUP_TABLE_SIZE - 1];
+    // 以decay概率减少桶计数
+    if (random.nextDouble() < decay) {
+        bucket.count--;
+        if (bucket.count == 0) {
+            // 桶计数归零，替换为新Key
+            bucket.fingerprint = itemFingerprint;
+            bucket.count = increment - j;
+            maxCount = Math.max(maxCount, bucket.count);
+            break;
+        }
+    }
+}
+```
+
+**这个算法还有一个有意思的点就是，它有一个执行时间衰减操作，就是`模拟时间遗忘效率`不会让热点Key永久性的占用TopK队列中，会在一段时间让旧热点数据冷却，给新热点数据腾出位置**
+
+```java
+/**
+ * 执行时间衰减操作
+ * 对所有桶和TopK中的计数进行衰减，模拟时间遗忘效应
+ * <p>
+ * 衰减策略：
+ * 1. 将所有桶的计数右移1位（相当于除以2）
+ * 2. 清理计数归零的桶，释放指纹空间
+ * 3. 对TopK中的计数也进行相同的衰减
+ * 4. 移除衰减后计数为0的TopK项
+ * <p>
+ * 作用：
+ * - 让历史热点逐渐"冷却"，为新热点让出空间
+ * - 保持算法对数据流时间变化的敏感性
+ * - 防止旧热点永久占据TopK位置
+ */
+@Override
+public void fading() {
+    // 对所有桶执行衰减
+    for (Bucket[] row : buckets) {
+        for (Bucket bucket : row) {
+            synchronized (bucket) {
+                // 计数右移1位，相当于除以2
+                bucket.count = bucket.count >> 1;
+                if (bucket.count == 0) {
+                    // 计数归零，清理指纹
+                    bucket.fingerprint = 0;
+                }
+            }
+        }
+  
+    // 对TopK堆中的计数也执行衰减
+    synchronized (minHeap) {
+        PriorityQueue<Node> newHeap = new PriorityQueue<>(Comparator.comparingInt(n -> n.count));
+        for (Node node : minHeap) {
+            int newCount = node.count >> 1;
+            if (newCount > 0) {
+                // 只保留衰减后计数仍大于0的Key
+                newHeap.add(new Node(node.key, newCount));
+            }
+        }
+        minHeap.clear();
+        minHeap.addAll(newHeap);
+  
+    // 总计数也进行衰减
+    total = total >> 1;
+}
+        
+/**
+ * 定时清理过期的热 Key 检测数据
+ */
+@Scheduled(fixedRate = 20, timeUnit = TimeUnit.SECONDS)
+public void cleanHotKeys() {
+    hotKeyDetector.fading();
+}
+```
+
+**新建 manager.cache 包，创建 Item 类**
+
+```java
+/**
+ * 热点数据项记录类
+ * 用于封装热点Key及其访问频次信息
+ *
+ * @param key   热点Key的名称
+ * @param count 该Key的访问计数/频次
+ * @author pine
+ */
+public record Item(String key, int count) {
+}
+```
+
+**这里补充一点 Record 的知识**
+
+![](./img/img27.jpg)
+
+**添加返回类**
+
+```java
+/**
+ * @param expelledKey 被驱逐出TopK的Key，如果没有则为null
+ * @param hotKey      当前添加的Key是否成为热点Key
+ * @param currentKey  当前操作的 key
+ */
+public record AddResult(String expelledKey, boolean hotKey, String currentKey) {
+}
+```
+
+**创建 TopK 接口**
+
+```java
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+
+/**
+ * TopK热点检测算法接口
+ * 定义了热点Key检测的核心操作方法
+ */
+public interface TopK {
+
+    /**
+     * 添加Key访问记录并更新热点统计
+     *
+     * @param key       被访问的Key
+     * @param increment 增加的访问次数（通常为1）
+     * @return AddResult 包含操作结果的封装对象（被驱逐的Key、是否为热Key等）
+     */
+    AddResult add(String key, int increment);
+
+    /**
+     * 获取当前TopK热点Key列表
+     * 按热度降序排序
+     *
+     * @return 热点Key列表，第一个元素热度最高
+     */
+    List<Item> list();
+
+    /**
+     * 获取被驱逐出TopK的Key队列
+     * 用于监控哪些Key从热点列表中被移除
+     *
+     * @return 被驱逐Key的阻塞队列
+     */
+    BlockingQueue<Item> expelled();
+
+    /**
+     * 执行时间衰减操作
+     * 将所有Key的计数减半，让历史热点逐渐"冷却"
+     * 通常定时调用（如每20秒一次）
+     */
+    void fading();
+
+    /**
+     * 获取总访问计数
+     *
+     * @return 累计的总访问次数
+     */
+    long total();
+}
+```
+
+**实现 HeavyKeeper 算法**
+
+```java
+package com.suibian.manager.cache;
+
+import cn.hutool.core.util.HashUtil;
+
+import java.util.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+/**
+ * HeavyKeeper算法实现 - 高效的TopK热点检测算法
+ * <p>
+ * HeavyKeeper是一种基于概率数据结构的流式TopK算法，具有以下特点：
+ * 1. 空间复杂度：O(k + w*d)，其中k是TopK大小，w是哈希表宽度，d是深度
+ * 2. 时间复杂度：每次插入O(d*log k)，查询TopK为O(k)
+ * 3. 准确性：通过多层哈希和概率性替换保证高准确率
+ * 4. 实时性：支持流式数据处理，无需预先知道数据分布
+ * <p>
+ * 算法核心思想：
+ * - 使用多层哈希表(Count-Min Sketch变种)估算频次
+ * - 维护一个最小堆保存TopK候选
+ * - 通过概率性替换(衰减机制)处理哈希冲突
+ * - 支持时间衰减，适应数据流的时间局部性
+ * <p>
+ * 适用场景：
+ * - 热点Key检测（缓存、数据库）
+ * - 网络流量分析
+ * - 用户行为分析
+ * - 实时推荐系统
+ */
+public class HeavyKeeper implements TopK {
+    /**
+     * 查找表大小，用于预计算衰减概率
+     */
+    private static final int LOOKUP_TABLE_SIZE = 256;
+
+    /**
+     * TopK的K值，即要维护的热点Key数量
+     */
+    private final int k;
+
+    /**
+     * 哈希表宽度，即每层哈希表的桶数量
+     */
+    private final int width;
+
+    /**
+     * 哈希表深度，即哈希表的层数
+     */
+    private final int depth;
+
+    /**
+     * 衰减概率查找表，预计算不同计数下的衰减概率
+     */
+    private final double[] lookupTable;
+
+    /**
+     * 多层哈希表，每个桶存储指纹和计数
+     */
+    private final Bucket[][] buckets;
+
+    /**
+     * 最小堆，维护TopK热点Key
+     */
+    private final PriorityQueue<Node> minHeap;
+
+    /**
+     * 被驱逐Key的队列，用于监控热点变化
+     */
+    private final BlockingQueue<Item> expelledQueue;
+
+    /**
+     * 随机数生成器，用于概率性衰减
+     */
+    private final Random random;
+
+    /**
+     * 总访问计数
+     */
+    private long total;
+
+    /**
+     * 最小计数阈值，低于此值不考虑为热点候选
+     */
+    private final int minCount;
+
+    /**
+     * 哈希种子数组，为每层哈希表提供不同的种子
+     */
+    private final int[] hashSeeds;
+
+    /**
+     * 构造HeavyKeeper实例
+     *
+     * @param k        TopK的K值，要维护的热点Key数量
+     * @param width    哈希表宽度，每层桶的数量，影响哈希冲突概率
+     * @param depth    哈希表深度，层数，影响检测准确性
+     * @param decay    衰减系数(0,1)，控制概率性替换的激进程度
+     * @param minCount 最小计数阈值，过滤低频Key
+     */
+    public HeavyKeeper(int k, int width, int depth, double decay, int minCount) {
+        this.k = k;
+        this.width = width;
+        this.depth = depth;
+        this.minCount = minCount;
+
+        // 初始化衰减概率查找表，预计算decay^i的值
+        this.lookupTable = new double[LOOKUP_TABLE_SIZE];
+        for (int i = 0; i < LOOKUP_TABLE_SIZE; i++) {
+            lookupTable[i] = Math.pow(decay, i);
+        }
+
+        // 初始化多层哈希表
+        this.buckets = new Bucket[depth][width];
+        for (int i = 0; i < depth; i++) {
+            for (int j = 0; j < width; j++) {
+                buckets[i][j] = new Bucket();
+            }
+        }
+
+        // 为每层哈希表生成不同的种子，确保哈希独立性
+        this.hashSeeds = new int[depth];
+        Random seedRandom = new Random(42); // 使用固定种子保证可重现性
+        for (int i = 0; i < depth; i++) {
+            hashSeeds[i] = seedRandom.nextInt();
+        }
+
+        // 初始化最小堆，按计数升序排列
+        this.minHeap = new PriorityQueue<>(Comparator.comparingInt(n -> n.count));
+
+        // 初始化被驱逐Key队列
+        this.expelledQueue = new LinkedBlockingQueue<>();
+        this.random = new Random();
+        this.total = 0;
+    }
+
+    /**
+     * 添加Key的访问记录
+     * HeavyKeeper算法的核心方法，实现概率性计数和TopK维护
+     *
+     * @param key       被访问的Key
+     * @param increment 增加的计数值（通常为1）
+     * @return AddResult 包含操作结果：被驱逐的Key、是否为热点Key等
+     */
+    @Override
+    public AddResult add(String key, int increment) {
+        // 计算Key的字节表示和指纹
+        byte[] keyBytes = key.getBytes();
+        long itemFingerprint = hash(keyBytes);
+        int maxCount = 0;
+
+        // 在每层哈希表中处理该Key
+        for (int i = 0; i < depth; i++) {
+            // 计算在第i层的桶位置
+            int bucketNumber = Math.abs(hash(keyBytes, i)) % width;
+            Bucket bucket = buckets[i][bucketNumber];
+
+            synchronized (bucket) {
+                if (bucket.count == 0) {
+                    // 桶为空，直接插入
+                    bucket.fingerprint = itemFingerprint;
+                    bucket.count = increment;
+                    maxCount = Math.max(maxCount, increment);
+                } else if (bucket.fingerprint == itemFingerprint) {
+                    // 指纹匹配，增加计数
+                    bucket.count += increment;
+                    maxCount = Math.max(maxCount, bucket.count);
+                } else {
+                    // 指纹不匹配，执行概率性衰减替换
+                    int originalCount = bucket.count;
+                    for (int j = 0; j < increment; j++) {
+                        // 根据当前桶的计数决定衰减概率
+                        double decay = bucket.count < LOOKUP_TABLE_SIZE ?
+                                lookupTable[bucket.count] :
+                                lookupTable[LOOKUP_TABLE_SIZE - 1];
+                        // 以decay概率减少桶计数
+                        if (random.nextDouble() < decay) {
+                            bucket.count--;
+                            if (bucket.count == 0) {
+                                // 桶计数归零，替换为新Key
+                                bucket.fingerprint = itemFingerprint;
+                                bucket.count = increment - j;
+                                maxCount = Math.max(maxCount, bucket.count);
+                                break;
+                            }
+                        }
+                    }
+                    // 如果没有成功替换，至少记录一次访问
+                    if (bucket.count == originalCount && maxCount == 0) {
+                        maxCount = 1;
+                    }
+                }
+            }
+        }
+
+        // 更新总访问计数
+        total += increment;
+
+        // 如果估算的最大计数低于阈值，不考虑为热点
+        if (maxCount < minCount) {
+            return new AddResult(null, false, key);
+        }
+
+        // 更新TopK最小堆
+        synchronized (minHeap) {
+            boolean isHot = false;
+            String expelled = null;
+
+            // 检查Key是否已在TopK中
+            Optional<Node> existing = minHeap.stream()
+                    .filter(n -> n.key.equals(key))
+                    .findFirst();
+
+            if (existing.isPresent()) {
+                // Key已存在，更新其计数
+                minHeap.remove(existing.get());
+                minHeap.add(new Node(key, maxCount));
+                isHot = true;
+            } else {
+                // 新Key，判断是否应该加入TopK
+                if (minHeap.size() < k || maxCount >= Objects.requireNonNull(minHeap.peek()).count) {
+                    Node newNode = new Node(key, maxCount);
+                    if (minHeap.size() >= k) {
+                        // TopK已满，驱逐计数最小的Key
+                        Node expelledNode = minHeap.poll();
+                        expelled = expelledNode.key;
+                        expelledQueue.offer(new Item(expelled, expelledNode.count));
+                    }
+                    minHeap.add(newNode);
+                    isHot = true;
+                }
+            }
+
+            return new AddResult(expelled, isHot, key);
+        }
+    }
+
+    /**
+     * 获取当前TopK热点Key列表
+     * 按访问计数降序排列
+     *
+     * @return TopK热点Key列表，第一个元素热度最高
+     */
+    @Override
+    public List<Item> list() {
+        synchronized (minHeap) {
+            // 将堆中的Node转换为Item列表
+            List<Item> result = new ArrayList<>(minHeap.size());
+            for (Node node : minHeap) {
+                result.add(new Item(node.key, node.count));
+            }
+            // 按计数降序排序
+            result.sort((a, b) -> Integer.compare(b.count(), a.count()));
+            return result;
+        }
+    }
+
+    /**
+     * 获取被驱逐Key的队列
+     * 用于监控哪些Key曾经是热点但后来被其他Key替换
+     *
+     * @return 被驱逐Key的阻塞队列
+     */
+    @Override
+    public BlockingQueue<Item> expelled() {
+        return expelledQueue;
+    }
+
+    /**
+     * 执行时间衰减操作
+     * 对所有桶和TopK中的计数进行衰减，模拟时间遗忘效应
+     * <p>
+     * 衰减策略：
+     * 1. 将所有桶的计数右移1位（相当于除以2）
+     * 2. 清理计数归零的桶，释放指纹空间
+     * 3. 对TopK中的计数也进行相同的衰减
+     * 4. 移除衰减后计数为0的TopK项
+     * <p>
+     * 作用：
+     * - 让历史热点逐渐"冷却"，为新热点让出空间
+     * - 保持算法对数据流时间变化的敏感性
+     * - 防止旧热点永久占据TopK位置
+     */
+    @Override
+    public void fading() {
+        // 对所有桶执行衰减
+        for (Bucket[] row : buckets) {
+            for (Bucket bucket : row) {
+                synchronized (bucket) {
+                    // 计数右移1位，相当于除以2
+                    bucket.count = bucket.count >> 1;
+                    if (bucket.count == 0) {
+                        // 计数归零，清理指纹
+                        bucket.fingerprint = 0;
+                    }
+                }
+            }
+        }
+
+        // 对TopK堆中的计数也执行衰减
+        synchronized (minHeap) {
+            PriorityQueue<Node> newHeap = new PriorityQueue<>(Comparator.comparingInt(n -> n.count));
+            for (Node node : minHeap) {
+                int newCount = node.count >> 1;
+                if (newCount > 0) {
+                    // 只保留衰减后计数仍大于0的Key
+                    newHeap.add(new Node(node.key, newCount));
+                }
+            }
+            minHeap.clear();
+            minHeap.addAll(newHeap);
+        }
+
+        // 总计数也进行衰减
+        total = total >> 1;
+    }
+
+    /**
+     * 获取总访问计数
+     * 返回所有Key的累计访问次数
+     *
+     * @return 总访问次数
+     */
+    @Override
+    public long total() {
+        return total;
+    }
+
+    /**
+     * 哈希桶数据结构
+     * 存储Key的指纹和访问计数
+     */
+    private static class Bucket {
+        /**
+         * Key的指纹，用于快速比较Key是否相同
+         */
+        long fingerprint;
+        /**
+         * 访问计数
+         */
+        int count;
+    }
+
+    /**
+     * TopK堆中的节点
+     * 存储Key和其对应的计数
+     */
+    private static class Node {
+        /**
+         * Key值
+         */
+        final String key;
+        /**
+         * 计数值
+         */
+        final int count;
+
+        Node(String key, int count) {
+            this.key = key;
+            this.count = count;
+        }
+    }
+
+    /**
+     * 计算带层级种子的哈希值
+     * 为不同层的哈希表提供独立的哈希函数
+     *
+     * @param data  要哈希的数据
+     * @param layer 哈希层级
+     * @return 哈希值
+     */
+    private int hash(byte[] data, int layer) {
+        int hash = HashUtil.murmur32(data);
+        return hash ^ hashSeeds[layer];
+    }
+
+    /**
+     * 计算标准哈希值
+     * 用于生成Key的指纹
+     *
+     * @param data 要哈希的数据
+     * @return 哈希值
+     */
+    private static int hash(byte[] data) {
+        return HashUtil.murmur32(data);
+    }
+
+}
+```
+
+**创建一个`CacheManager`类封装一下该算法，我在构造函数里设置一个热点Key至少要被点击10次才会被塞进TopK队列里**
+
+```java
+/**
+ * 缓存管理器
+ */
+@Component
+@Slf4j
+public class CacheManager {
+    private TopK hotKeyDetector;
+    private Cache<String, Object> localCache;
+    @Resource
+    private RedisTemplate<String, Object> redisTemplate;
+
+    @Bean
+    public TopK getHotKeyDetector() {
+        hotKeyDetector = new HeavyKeeper(
+                // 监控 Top 100 Key
+                100,
+                // 宽度
+                100000,
+                // 深度
+                5,
+                // 衰减系数
+                0.92,
+                // 最小出现 10 次才记录
+                10
+        );
+        return hotKeyDetector;
+    }
+
+    @Bean
+    public Cache<String, Object> localCache() {
+        return localCache = Caffeine.newBuilder()
+                .maximumSize(1000)
+                .expireAfterWrite(5, TimeUnit.MINUTES)
+                .build();
+    }
+
+
+    /**
+     * 辅助方法：构造复合 key
+     *
+     * @param hashKey hashKey
+     * @param key     key
+     * @return compositeKey
+     */
+    private String buildCacheKey(String hashKey, String key) {
+        return hashKey + ":" + key;
+    }
+
+    public Object get(String hashKey, String key) {
+        // 构造唯一的 composite key
+        String compositeKey = buildCacheKey(hashKey, key);
+
+        // 1. 先查本地缓存
+        Object value = localCache.getIfPresent(compositeKey);
+        if (value != null) {
+            log.info("本地缓存获取到数据 {} = {}", compositeKey, value);
+            // 记录访问次数（每次访问计数 +1）
+            hotKeyDetector.add(key, 1);
+            return value;
+        }
+
+        // 2. 本地缓存未命中，查询 Redis
+        Object redisValue = redisTemplate.opsForHash().get(hashKey, key);
+        if (redisValue == null) {
+            return null;
+        }
+
+        // 3. 记录访问（计数 +1）
+        AddResult addResult = hotKeyDetector.add(key, 1);
+
+        // 4. 如果是热 Key 且不在本地缓存，则缓存数据
+        if (addResult.hotKey()) {
+            localCache.put(compositeKey, redisValue);
+        }
+
+        return redisValue;
+    }
+
+    public void putIfPresent(String hashKey, String key, Object value) {
+        String compositeKey = buildCacheKey(hashKey, key);
+        Object object = localCache.getIfPresent(compositeKey);
+        if (object == null) {
+            return;
+        }
+        localCache.put(compositeKey, value);
+    }
+
+    /**
+     * 定时清理过期的热 Key 检测数据
+     */
+    @Scheduled(fixedRate = 20, timeUnit = TimeUnit.SECONDS)
+    public void cleanHotKeys() {
+        hotKeyDetector.fading();
+    }
+
+
+}
+```
+

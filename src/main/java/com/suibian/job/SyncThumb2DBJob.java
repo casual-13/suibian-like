@@ -97,12 +97,13 @@ public class SyncThumb2DBJob {
                 Thumb thumb = new Thumb();
                 thumb.setUserId(userId);
                 thumb.setBlogId(blogId);
+                thumb.setCreateTime(DateUtil.parse(thumbTemp.getTime()));
                 thumbList.add(thumb);
                 // 取消点赞操作，保存取消点赞记录
             } else if (ThumbTypeEnum.DECR.getValue() == thumbType) {
                 needDelete = true;
                 delWrapper.eq(Thumb::getUserId, userId).eq(Thumb::getBlogId, blogId);
-            } else if (ThumbTypeEnum.NON.getValue() == thumbType) {
+            } else if (ThumbTypeEnum.NON.getValue() != thumbType) {
                 log.warn("数据异常：{}", userId + "," + blogId + "," + thumbType);
             }
             // 计算点赞增量
