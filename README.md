@@ -2051,3 +2051,50 @@ public class ThumbReconcileJob {
 **OK，这个也没有问题，首先查询Redis的记录封装成Set，再查询数据库的记录封装成Set，利用`Sets.difference`方法比较，有不一致的，插入数据库进行数据同步**
 
 ![](./img/img47.jpg)
+
+
+
+## 第六天：引入分布式数据库 TiDB（既能保持关系型数据库的 ACID 特性，又能实现水平扩展的分布式数据库解决方案）
+
+[官方文档]([TiDB 数据库快速上手指南 | TiDB 文档中心](https://docs.pingcap.com/zh/tidb/stable/quick-start-with-tidb/))
+
+**同样从docker里面拉取镜像并部署TiDB容器**
+
+![](./img/img48.jpg)
+
+**使用DataGrid尝试连接一下，默认用户名root，密码无**
+
+![](./img/img49.jpg)
+
+**创建suibian_like数据库**
+
+![](./img/img50.jpg)
+
+**利用DataGrip的复杂表功能，直接将表结构及数据复制到TiDB中**
+
+![](./img/img51.jpg)
+
+**修改配置文件，将密码设为空**
+
+```java
+spring:
+  # 数据库配置
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/suibian_like?			useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 
+```
+
+**测试**
+
+**点赞功能**
+
+![](./img/img52.jpg)
+
+**取消点赞功能**
+
+![](./img/img53.jpg)
+
+**都没问题**
+
