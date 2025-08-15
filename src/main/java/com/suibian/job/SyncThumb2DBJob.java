@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import java.util.*;
 
-@Component
+//@Component
 @Slf4j
 public class SyncThumb2DBJob {
 

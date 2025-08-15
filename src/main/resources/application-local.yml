@@ -13,3 +13,8 @@ spring:
       database: 0
       connect-timeout: 5000
 #      password: xxx # 没有密码可注释
+  pulsar:
+    client:
+      service-url: pulsar://localhost:6650
+    admin:
+      service-url: http://localhost:8080

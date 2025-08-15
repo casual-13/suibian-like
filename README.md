@@ -4,7 +4,7 @@
 
 **使用 Spring Boot 3 + MyBatis-Plus 快速开发基础点赞功能。**
 
-**接口文档：localhost:8080/api/doc.html**
+**接口文档：localhost:8888/api/doc.html**
 
 ![](.\img\img.png)
 
@@ -1609,3 +1609,445 @@ public class CacheManager {
 }
 ```
 
+
+
+## 第五天：引入`消息队列`优化系统架构，提升削峰填谷的能力和系统可用性
+
+**这个项目我选择使用`Pulsar`作为消息队列的技术选型**
+
+**原因：**
+
+**高吞吐与低延迟的平衡**
+
+**千万级 Topic 支持Pulsar 可管理百万级 Topic（如 Yahoo 生产环境支撑 230 万 Topic），且 Topic 数量增长不影响性能。而 Kafka 在 Topic 过多时元数据管理压力剧增，导致延迟飙升356。**
+
+**低延迟保障**
+
+**在大规模分区下（如 10,000 分区），Pulsar 的 99% 消息延迟仍稳定在 10ms 以内（同步写入场景），而 Kafka 在 5,000 分区时延迟已升至数十秒18**
+
+**Broker 内存缓存机制（读操作优先命中缓存）和 BookKeeper 的追加写优化，进一步降低端到端延迟24**
+
+`我打算将Pulsar安装到docker里，除了Pulsar外，我的大部分中间件都是安装到docker，像本项目的Redis也是，只需要拉取镜像，然后创建容器运行就行，通过docker我们也可以快速实现集群，挺方便的`
+
+**这里直接拉取Apache Pulsar镜像**
+
+![](./img/img31.jpg)
+
+**通过docker命令，或者通过docker Desktop图形化都可以创建容器并启动容器**
+
+![](./img/img32.jpg)
+
+![](./img/img33.jpg)
+
+**由于pulsar将8080端口占用了，所以将本项目端口改为8888**
+
+![](./img/img34.jpg)
+
+**引入Pulsar依赖**
+
+```java
+<!-- 引入 spring-pulsar -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-pulsar</artifactId>
+</dependency>
+```
+
+**配置相关信息**
+
+```java
+pulsar:
+  client:
+    service-url: pulsar://localhost:6650
+  admin:
+    service-url: http://localhost:8080
+```
+
+**创建事件对象**
+
+```java
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ThumbEvent implements Serializable {
+
+    /**
+     * 用户ID
+     */
+    private Long userId;
+
+    /**
+     * 博客ID
+     */
+    private Long blogId;
+
+    /**
+     * 操作类型
+     */
+    private EventType type;
+
+    /**
+     * 事件发生时间
+     */
+    private LocalDateTime eventTime;
+
+    /**
+     * 操作类型枚举
+     */
+    public enum EventType {
+        /**
+         * 点赞
+         */
+        INCR,
+
+        /**
+         * 取消点赞
+         */
+        DECR;
+    }
+}
+```
+
+**新增lua脚本，用户执行点赞取消点赞操作，执行lua脚本保证操作的原子性，依然是Hash结构，Key为thumb:userId，Hash的key为BlogId，Hash的Value为1表示点赞**
+
+```
+/**
+ * 点赞脚本
+ * KEYS[1]       -- 用户点赞状态键
+ * ARGV[1]       -- 博客 ID
+ * 返回:
+ * -1: 已点赞
+ * 1: 操作成功
+ */
+public static final RedisScript<Long> THUMB_SCRIPT_MQ = new DefaultRedisScript<>("""
+            local userThumbKey = KEYS[1]
+            local blogId = ARGV[1]
+                        
+            -- 判断是否已经点赞
+            if redis.call("HEXISTS", userThumbKey, blogId) == 1 then
+                return -1
+            end
+                        
+            -- 添加点赞记录
+            redis.call("HSET", userThumbKey, blogId, 1)
+            return 1
+        """, Long.class);
+
+/**
+ * 取消点赞 Lua 脚本
+ * KEYS[1]       -- 用户点赞状态键
+ * ARGV[1]       -- 博客 ID
+ * 返回:
+ * -1: 已点赞
+ * 1: 操作成功
+ */
+public static final RedisScript<Long> UN_THUMB_SCRIPT_MQ = new DefaultRedisScript<>("""
+            local userThumbKey = KEYS[1]
+            local blogId = ARGV[1]
+            
+            -- 判断是否已经点赞
+            if redis.call("HEXISTS", userThumbKey, blogId) == 0 then
+            	return -1
+            end
+            
+            -- 删除点赞记录
+            redis.call("HDEL", userThumbKey, blogId, 1)
+            return 1
+        """, Long.class);
+```
+
+**消息队列配置类，并通过死信队列和重试机制保证消息的可靠性**
+
+```java
+@Configuration
+public class ThumbConsumerConfig<T> implements PulsarListenerConsumerBuilderCustomizer<T> {
+    @Override
+    public void customize(ConsumerBuilder<T> consumerBuilder) {
+        consumerBuilder.batchReceivePolicy(BatchReceivePolicy.builder()
+                // 最大批量拉取数量
+                .maxNumMessages(1000)
+                // 最长等待时间
+                .timeout(10000, TimeUnit.MILLISECONDS)
+                .build());
+    }
+
+    // 配置 NACK 重试策略
+    @Bean
+    public RedeliveryBackoff NackRedeliveryBackoff() {
+        return MultiplierRedeliveryBackoff.builder()
+                .minDelayMs(1000)
+                .maxDelayMs(60_000)
+                .multiplier(2)
+                .build();
+    }
+
+    // 配置 ACK 超时重试策略
+    @Bean
+    public RedeliveryBackoff AckRedeliveryBackoff() {
+        return MultiplierRedeliveryBackoff.builder()
+                .minDelayMs(3000)
+                .maxDelayMs(300_000)
+                .multiplier(3)
+                .build();
+    }
+
+    // 死信主题
+    @Bean
+    public DeadLetterPolicy deadLetterPolicy() {
+        return DeadLetterPolicy.builder()
+                .maxRedeliverCount(3)
+                .deadLetterTopic("thumb-dlq-topic")
+                .build();
+    }
+}
+```
+
+**服务创建，将Thumb数据插入数据库的操作，改为提交Pulsar**
+
+![](./img/img35.jpg)
+
+![](./img/img36.jpg)**消息消费者**
+
+```jave
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ThumbConsumer {
+
+    private final BlogMapper blogMapper;
+    private final ThumbService thumbService;
+
+    @PulsarListener(
+            subscriptionName = "thumb-subscription",
+            subscriptionType = SubscriptionType.Shared,
+            schemaType = SchemaType.JSON,
+            topics = "thumb-topic",
+            batch = true,
+            // 引用 NACK 重试策略
+            negativeAckRedeliveryBackoff ="NackRedeliveryBackoff",
+            // 引用 ACK 超时重试策略
+            ackTimeoutRedeliveryBackoff = "AckRedeliveryBackoff",
+            // 引用死信队列策略
+            deadLetterPolicy = "deadLetterPolicy",
+            consumerCustomizer = "thumbConsumerConfig"
+    )
+    public void processBatch(List<Message<ThumbEvent>> messages) {
+        log.info("ThumbConsumer processBatch: {}", messages.size());
+        for (Message<ThumbEvent> message : messages) {
+            log.info("message.getMessageId() = {}", message.getMessageId());
+        }
+        if (true) {
+            throw new RuntimeException("ThumbConsumer processBatch failed");
+        }
+        // 封装所有删除条件
+        LambdaQueryWrapper<Thumb> wrapper = new LambdaQueryWrapper<>();
+        // Key: blogId， Value: 赞数
+        Map<Long, Long> countMap = new ConcurrentHashMap<>();
+
+        // 封装到集合批量插入点赞记录
+        List<Thumb> thumbs = new ArrayList<>();
+        // 记录是否需要删除
+        AtomicReference<Boolean> needRemove = new AtomicReference<>(false);
+
+        // 提取事件并过滤无效消息
+        List<ThumbEvent> events = messages.stream()
+                .map(Message::getValue)
+                .filter(Objects::nonNull)
+                .toList();
+
+        Map<Pair<Long, Long>, ThumbEvent> latestEvents = events.stream()
+                // 先分组，根据UserId和BlogId进行分组
+                .collect(Collectors.groupingBy(
+                        e -> Pair.of(e.getUserId(), e.getBlogId()),
+                        // 分组后封装成集合，并排序
+                        Collectors.collectingAndThen(Collectors.toList(), list -> {
+                            list.sort(Comparator.comparing(ThumbEvent::getEventTime));
+                            // 如果是偶数，说明点赞操作数等于取消点赞操作数，等同于没操作
+                            if (list.size() % 2 == 0) {
+                                return null;
+                            }
+                            // 否则获得最晚操作
+                            return list.getLast();
+                        })
+                ));
+
+        // 遍历所有操作
+        latestEvents.forEach((userBlobPair, event) -> {
+            if (event == null) {
+                return;
+            }
+            ThumbEvent.EventType finalAction = event.getType();
+            // 点赞操作
+            if (ThumbEvent.EventType.INCR.equals(finalAction)) {
+                countMap.merge(event.getBlogId(), 1L, Long::sum);
+                Thumb thumb = new Thumb();
+                thumb.setUserId(event.getUserId());
+                thumb.setBlogId(event.getBlogId());
+                thumbs.add(thumb);
+            } else {
+                // 取消点赞操作
+                needRemove.set(true);
+                wrapper.or().eq(Thumb::getUserId, event.getUserId()).eq(Thumb::getBlogId, event.getBlogId());
+                countMap.merge(event.getBlogId(), -1L, Long::sum);
+            }
+        });
+
+        // 批量删除点赞记录
+        if (needRemove.get()) {
+            thumbService.remove(wrapper);
+        }
+        // 批量更新点赞数
+        batchUpdateBlogs(countMap);
+        // 批量插入点赞记录
+        batchInsertThumbs(thumbs);
+    }
+
+    public void batchUpdateBlogs(Map<Long, Long> countMap) {
+        if (!countMap.isEmpty()) {
+            blogMapper.batchUpdateThumbCount(countMap);
+        }
+    }
+
+    public void batchInsertThumbs(List<Thumb> thumbs) {
+        if (!thumbs.isEmpty()) {
+            thumbService.saveBatch(thumbs, 500);
+        }
+    }
+
+    @PulsarListener(topics = "thumb-dlq-topic")
+    public void consumeDlq(Message<ThumbEvent> message) {
+        MessageId messageId = message.getMessageId();
+        log.info("dlq message = {}", messageId);
+        log.info("消息 {} 已入库", messageId);
+        log.info("已通知相关人员 {} 处理消息 {}", "坤哥", messageId);
+    }
+}
+```
+
+**最后再来一个兜底方案：每天凌晨2点的时候，这时候的业务应该是空闲阶段，这个时候可以将redis的数据于mysql的数据进行比对，保证数据的一致性**
+
+```java
+@Service
+@Slf4j
+public class ThumbReconcileJob {
+
+    @Resource
+    private RedisTemplate<String, Object> redisTemplate;
+
+    @Resource
+    private ThumbService thumbService;
+
+    @Resource
+    private PulsarTemplate<ThumbEvent> pulsarTemplate;
+
+    /**
+     * 定时任务，每天2点执行一次
+     */
+    @Scheduled(cron = "0 0 2 * * ?")
+    public void run() {
+        long startTime = System.currentTimeMillis();
+
+        // 1. 获取该分片下所有用户ID
+        Set<Long> userIds = new HashSet<>();
+        String pattern = ThumbConstant.USER_THUMB_KEY_PREFIX + "*";
+        try (Cursor<String> cursor = redisTemplate.scan(ScanOptions.scanOptions().match(pattern).count(1000).build())) {
+            while (cursor.hasNext()) {
+                String key = cursor.next();
+                Long userId = Long.valueOf(key.replace(ThumbConstant.USER_THUMB_KEY_PREFIX, ""));
+                userIds.add(userId);
+            }
+        }
+
+        // 2. 逐用户比对
+        userIds.forEach(userId -> {
+            Set<Long> redisBlogIds = redisTemplate.opsForHash().keys(ThumbConstant.USER_THUMB_KEY_PREFIX + userId)
+                    .stream()
+                    .map(obj -> Long.valueOf(obj.toString()))
+                    .collect(Collectors.toSet());
+            Set<Long> mysqlBlogIds = Optional.ofNullable(thumbService.lambdaQuery()
+                            .eq(Thumb::getUserId, userId)
+                            .list()
+                    ).orElse(new ArrayList<>())
+                    .stream()
+                    .map(Thumb::getBlogId)
+                    .collect(Collectors.toSet());
+            
+            // 3.数据比对(redis有的，mysql没有的 
+            Set<Long> diffBlogIds = Sets.difference(redisBlogIds, mysqlBlogIds);
+
+            // 4. 发送补偿事件
+            sendCompensationEvents(userId, diffBlogIds);
+
+            log.info("对账任务完成，耗时 {}ms", System.currentTimeMillis() - startTime);
+        });
+    }
+
+    /**
+     * 发送补偿事件到Pulsar
+     */
+    private void sendCompensationEvents(Long userId, Set<Long> blogIds) {
+        blogIds.forEach(blogId -> {
+            ThumbEvent thumbEvent = ThumbEvent.builder()
+                    .userId(userId)
+                    .blogId(blogId)
+                    .type(ThumbEvent.EventType.INCR)
+                    .eventTime(LocalDateTime.now())
+                    .build();
+            try {
+                pulsarTemplate.sendAsync("thumb-topic", thumbEvent);
+            } catch (PulsarClientException e) {
+                log.error("补偿事件发送失败: userId={}, blogId={}", userId, blogId, e);
+            }
+        });
+    }
+}
+```
+
+**测试一下**
+
+**服务正常启动，没毛**
+
+![](./img/img37.jpg)
+
+**先测试一下正常的流程**
+
+![](./img/img38.jpg)
+
+![](./img/img39.jpg)
+
+`没毛！！！`
+
+**再测试一下异常消息处理，先手动给消费者加一个异常**
+
+![](./img/img40.jpg)
+
+**提交测试**
+
+![](./img/img41.jpg)
+
+**日志打印**
+
+![](./img/img42.jpg)
+
+![](./img/img43.jpg)
+
+**异常消息未正常处理，到最后确实是到达了死信队列，并被对应消费者消费处理，这是意料之中的**
+
+**但是奇怪的事，消息处理失败，在重试机制中，它的重试间隔时间并不是我设置的`1s->2s->4s`而是`10s`，上面红色下划线`56->06->16`**
+
+**如下重试配置**
+
+![](./img/img44.jpg)
+
+**噢噢噢，这是因为在其它配置里，我配置了一次最多可以接收1000条消息`maxNumMessages`，如果接收的消息到达1000条，它就会直接处理不会等待，否则它就会一直等待10s`timeout`，所以每次重试的10s间隔时间来源于这里**
+
+![](./img/img45.jpg)
+
+**最后测试一下兜底方案，暂时将每日2点执行修改10s执行一次，然后手动将数据库的数据删除，看看redis的数据是否会同步到数据库**
+
+![](./img/img46.jpg)
+
+**OK，这个也没有问题，首先查询Redis的记录封装成Set，再查询数据库的记录封装成Set，利用`Sets.difference`方法比较，有不一致的，插入数据库进行数据同步**
+
+![](./img/img47.jpg)

@@ -11,12 +11,12 @@ import lombok.Data;
 @Tag(name = "用户注册请求参数")
 public class UserRegisterReqDTO {
 
-    @Schema(name = "用户账号")
+    @Schema(name = "userAccount", description = "用户账号")
     private String userAccount;
 
-    @Schema(name = "用户密码")
+    @Schema(name = "userPassword", description = "用户密码")
     private String userPassword;
 
-    @Schema(name = "校验密码")
+    @Schema(name = "checkPassword", description = "校验密码")
     private String checkPassword;
 }

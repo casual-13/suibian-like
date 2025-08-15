@@ -8,10 +8,10 @@ import lombok.Data;
 @Tag(name = "用户登录")
 public class UserLoginReqDTO {
 
-    @Schema(name = "用户账号")
+    @Schema(name = "userAccount", description = "用户账号")
     private String userAccount;
 
-    @Schema(name = "用户密码")
+    @Schema(name = "userPassword", description = "用户密码")
     private String userPassword;
 
 }

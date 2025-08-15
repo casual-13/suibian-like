@@ -28,8 +28,8 @@ import java.util.Optional;
  * @ description 针对表【thumb(点赞记录表)】的数据库操作Service实现
  * @ createDate 2025-07-23 10:37:01
  */
-@Service("ThumbService")
-@Primary
+@Service("thumbServiceLocalCache")
+//@Primary
 @RequiredArgsConstructor
 public class ThumbLocalServiceImpl extends ServiceImpl<ThumbMapper, Thumb> implements ThumbService {
 
