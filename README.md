@@ -2305,3 +2305,7 @@ public static Optional<String> extractCookieValue(List<String> cookieHeader) {
 **TPS/s：551.8/sec**
 
 **异常：0.00%**
+
+**查看一下数据库和缓存**
+
+![](./img/img61.jpg)
