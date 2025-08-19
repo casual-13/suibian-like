@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,7 +28,7 @@ public class ThumbController {
      */
     @PostMapping("/do")
     @Operation(summary = "点赞")
-    public BaseResponse<Boolean> doThumb(ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
+    public BaseResponse<Boolean> doThumb(@RequestBody ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
         Boolean res = thumbService.doThumb(thumbLikeOrNotDTO);
         return ResultUtils.success(res);
     }
@@ -40,7 +41,7 @@ public class ThumbController {
      */
     @PostMapping("/undo")
     @Operation(summary = "取消点赞")
-    public BaseResponse<Boolean> undoThumb(ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
+    public BaseResponse<Boolean> undoThumb(@RequestBody ThumbLikeOrNotDTO thumbLikeOrNotDTO) {
         Boolean res = thumbService.undoThumb(thumbLikeOrNotDTO);
         return ResultUtils.success(res);
     }

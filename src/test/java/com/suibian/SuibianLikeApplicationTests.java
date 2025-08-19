@@ -121,8 +121,8 @@ class SuibianLikeApplicationTests {
                 // 构建登录请求表
                 UserLoginReqDTO userLoginReqDTO = new UserLoginReqDTO();
                 userLoginReqDTO.setUserAccount(user.getUserAccount());
-                userLoginReqDTO.setUserPassword(user.getUserPassword());
-                if ("suibian".equals(user.getUserName())) {
+                userLoginReqDTO.setUserPassword("123456789");
+                if ("suibian".equals(user.getUserAccount())) {
                     userLoginReqDTO.setUserPassword("12345678");
                 }
 

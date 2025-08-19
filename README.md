@@ -2293,3 +2293,15 @@ public static Optional<String> extractCookieValue(List<String> cookieHeader) {
 **添加动态 csv 变量**
 
 ![](./img/img59.jpg)
+
+**开始测试**
+
+**TIDB + Redis Lua 脚本 + Pulsar**
+
+![](./img/img60.jpg)
+
+**平均值：8131**
+
+**TPS/s：551.8/sec**
+
+**异常：0.00%**
