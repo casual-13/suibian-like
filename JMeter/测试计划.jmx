@@ -41,7 +41,7 @@
             </collectionProp>
           </elementProp>
           <stringProp name="HTTPSampler.domain">localhost</stringProp>
-          <stringProp name="HTTPSampler.port">8888</stringProp>
+          <stringProp name="HTTPSampler.port">8080</stringProp>
           <stringProp name="HTTPSampler.protocol">http</stringProp>
           <stringProp name="HTTPSampler.contentEncoding"></stringProp>
           <stringProp name="HTTPSampler.path">/api/thumb/do</stringProp>
@@ -63,6 +63,34 @@
             </elementProp>
           </collectionProp>
         </HeaderManager>
+        <hashTree/>
+        <CookieManager guiclass="CookiePanel" testclass="CookieManager" testname="HTTP Cookie管理器" enabled="true">
+          <collectionProp name="CookieManager.cookies">
+            <elementProp name="suibian-token" elementType="Cookie" testname="suibian-token">
+              <stringProp name="Cookie.value">${token}</stringProp>
+              <stringProp name="Cookie.domain">localhost</stringProp>
+              <stringProp name="Cookie.path">/</stringProp>
+              <boolProp name="Cookie.secure">false</boolProp>
+              <longProp name="Cookie.expires">0</longProp>
+              <boolProp name="Cookie.path_specified">true</boolProp>
+              <boolProp name="Cookie.domain_specified">true</boolProp>
+            </elementProp>
+          </collectionProp>
+          <boolProp name="CookieManager.clearEachIteration">false</boolProp>
+          <boolProp name="CookieManager.controlledByThreadGroup">false</boolProp>
+        </CookieManager>
+        <hashTree/>
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="CSV 数据文件设置" enabled="true">
+          <stringProp name="delimiter">,</stringProp>
+          <stringProp name="fileEncoding">UTF-8</stringProp>
+          <stringProp name="filename">D:/文件集合营/token_output_mysql.csv</stringProp>
+          <boolProp name="ignoreFirstLine">true</boolProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">true</boolProp>
+          <stringProp name="shareMode">shareMode.all</stringProp>
+          <boolProp name="stopThread">false</boolProp>
+          <stringProp name="variableNames">userId,token</stringProp>
+        </CSVDataSet>
         <hashTree/>
         <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="查看结果树" enabled="true">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
@@ -174,34 +202,6 @@
           </objProp>
           <stringProp name="filename"></stringProp>
         </ResultCollector>
-        <hashTree/>
-        <CookieManager guiclass="CookiePanel" testclass="CookieManager" testname="HTTP Cookie管理器" enabled="true">
-          <collectionProp name="CookieManager.cookies">
-            <elementProp name="suibian-token" elementType="Cookie" testname="suibian-token">
-              <stringProp name="Cookie.value">${token}</stringProp>
-              <stringProp name="Cookie.domain">localhost</stringProp>
-              <stringProp name="Cookie.path">/</stringProp>
-              <boolProp name="Cookie.secure">false</boolProp>
-              <longProp name="Cookie.expires">0</longProp>
-              <boolProp name="Cookie.path_specified">true</boolProp>
-              <boolProp name="Cookie.domain_specified">true</boolProp>
-            </elementProp>
-          </collectionProp>
-          <boolProp name="CookieManager.clearEachIteration">false</boolProp>
-          <boolProp name="CookieManager.controlledByThreadGroup">false</boolProp>
-        </CookieManager>
-        <hashTree/>
-        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="CSV 数据文件设置" enabled="true">
-          <stringProp name="delimiter">,</stringProp>
-          <stringProp name="fileEncoding">UTF-8</stringProp>
-          <stringProp name="filename">D:/文件集合营/token_output.csv</stringProp>
-          <boolProp name="ignoreFirstLine">true</boolProp>
-          <boolProp name="quotedData">false</boolProp>
-          <boolProp name="recycle">true</boolProp>
-          <stringProp name="shareMode">shareMode.all</stringProp>
-          <boolProp name="stopThread">false</boolProp>
-          <stringProp name="variableNames">userId,token</stringProp>
-        </CSVDataSet>
         <hashTree/>
       </hashTree>
     </hashTree>

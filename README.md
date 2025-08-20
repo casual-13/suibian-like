@@ -2296,6 +2296,64 @@ public static Optional<String> extractCookieValue(List<String> cookieHeader) {
 
 **开始测试**
 
+**版本回滚**
+
+![](./img/img68.jpg)
+
+![](./img/img69.jpg)
+
+**Mysql + Redis**
+
+![](./img/img66.jpg)
+
+**平均值：15004**
+
+**TPS/s：317.8/sec**
+
+**异常：0.00%**
+
+**查看一下数据库和缓存**
+
+![](./img/img67.jpg)
+
+
+
+**Mysql + Redis Lua脚本 + 定时任务数据同步**
+
+![](./img/img64.jpg)
+
+**平均值：5383**
+
+**TPS/s：814.6/sec**
+
+**异常：0.00%**
+
+**查看一下数据库和缓存**
+
+![](./img/img65.jpg)
+
+**这里的数据量并不是5001，这是因为每隔10s会有定时任务同步Redis和Mysql的数据，这里当时有bug，在后面的版本我改过来了，当时我的逻辑是，查询当前秒所在的10s，比如13s时就查10s - 19s，这就导致有6s的数据丢失了，所以在后面的版本里我改成查前10s的数据，即当前秒是13s，我就查0s-9s的数据这就不会丢失了**
+
+**所以这个测试是不准确的**
+
+
+
+**Mysql + Redis Lua 脚本 + 定时任务数据同步 + Caffeine 本地缓存 + HeavyKeeper 算法**
+
+![](./img/img62.jpg)
+
+**平均值：12874**
+
+**TPS/s：369.8/sec**
+
+**异常：0.00%**
+
+**查看一下数据库和缓存**
+
+![](./img/img63.jpg)
+
+
+
 **TIDB + Redis Lua 脚本 + Pulsar**
 
 ![](./img/img60.jpg)
@@ -2309,3 +2367,6 @@ public static Optional<String> extractCookieValue(List<String> cookieHeader) {
 **查看一下数据库和缓存**
 
 ![](./img/img61.jpg)
+
+**所以总结一下，最后的方案即最优方案，TPS也是最高的，因为业务只需要将点赞这个操作记录然后直接发给Pulsar消息队列即可，消息队列会异步执行并同步缓存和数据库的数据，再加上热点Key的本地缓存，使得点赞的主要业务不需要走完全部流程，而是异步完成，进而加快了业务处理速度**
+
